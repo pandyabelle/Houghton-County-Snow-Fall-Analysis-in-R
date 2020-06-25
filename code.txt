@@ -1,0 +1,324 @@
+---
+title: "Houghton snowfall survey"
+author: "Belee Pandya"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+library(ggplot2)
+library(forecast)
+library(neuralnet)
+
+snowData<- fread('/Users/Raptor/Downloads/data.csv')
+snowData$V11<- NULL
+snowData<- snowData[Winter != 'Winter']
+snowData <- snowData[, lapply(.SD, as.numeric), by=Winter]
+snowData<- snowData[order(Winter)]
+snowData[, startYear := as.numeric(substr(Winter, 1, 4))]
+snowData[, fall := Oct. + Nov.]
+snowData[, winter := Dec. + Jan. + Feb. + Mar.]
+snowData[, spring := Apr. + May]
+
+snowDataAverOverMonth<- snowData[, list(October = mean(Oct., na.rm=F), November = mean(Nov., na.rm=F),
+                                        December = mean(Dec., na.rm=F), January = mean(Jan., na.rm=F),
+                                        February = mean(Feb., na.rm=F), March = mean(Mar., na.rm=F),
+                                        April = mean(Apr., na.rm=F), May = mean(May, na.rm=F)),by='']
+months<- colnames(snowDataAverOverMonth)
+snowDataAverOverMonth<- data.table(Month = factor(months, levels = months), `Snowfall in Inches` = as.numeric(snowDataAverOverMonth[1]))
+```
+
+## Average snowfall over months
+
+```{r}
+ggplot() + ggtitle('Average Snowfall over months for last 126 years data') +   theme(axis.text.x = element_text(angle=45)) +
+  geom_bar(data = snowDataAverOverMonth, aes(x=Month, y = `Snowfall in Inches`), fill='blue', stat='identity')
+```
+
+## Distribution of snowfall over months
+
+```{r}
+ggplot(data=melt(snowData[, 1:9, with=F], id=c('Winter'))[order(Winter)]) +
+  ggtitle('Box plot distribution of snowfall over months for last 126 years data') + geom_boxplot(aes(x = variable, y=value, color=variable)) +
+  xlab('') + ylab('Snowfall in Inches')
+```
+
+**Plot notation** : The central rectangle spans the first quartile or 25 percentile to the third quartile or 75 percentile. This range is called the interquartile range or IQR.
+A segment inside the rectangle shows the median and whiskers above and below the box show the locations of the minimum and maximum, i.e., lower quartile - 1.5IQR and upper quartile + 1.5IQR respectively.
+
+**This plot is useful for detection of anomalies in particular month's snowfall in a particular year.** Every point which lies outside the two whiskers can be said as anomalous.
+
+## Correlation between total snowfall and snowfall in winter (December - March)
+
+```{r}
+ggplot(data=snowData) + ggtitle('Snowfall in inches over multiple seasons') + 
+  geom_line(aes(x=Winter, y=`Total Inches`, group =1, color = 'TOTAL')) +
+  geom_line(aes(x=Winter, y=fall, group=1, color = 'FALL')) +
+  geom_line(aes(x=Winter, y=winter, group=1, color = 'WINTER')) +
+  geom_line(aes(x=Winter, y=spring, group=1, color = 'SPRING')) +
+  theme(axis.text.x = element_text(angle=45, size=7)) + xlab('Year') + ylab('') +
+  scale_x_discrete(breaks = snowData$Winter[seq(1, nrow(snowData), 4)])
+
+ggplot(snowData) + ggtitle('Total snowfall in a season and snowfall in winter are highly correlated') +
+  geom_point(aes(x=`Total Inches`, y=winter)) + xlab('Total snowfall') + ylab('Snowfall in winter')
+```
+
+**Correlation coefficient is 0.96** between total snowfall in a season and snowfall during winter for last 126 years data. The same parameter is just ~0.36 when considered for fall or spring. This clearly shows that *increase in snowfall in a particular season is directly proportional to increase in snowfall in winter.*
+  
+## Prediction of snowfall for the current and upcoming seasons
+
+Multiple techniques can be used to predict or forecast the snowfall in future.
+These techniques can be grouped into two categories :
+
+1. Statistical Models
+    a. Moving Average (over last n years data)
+    b. Autoregressive Moving Average Model (over last n years data)
+    c. and so on...
+2. Predictive learning / Regression Models
+    a. Linear Regression (over last n years data and this )
+    b. Neural Nets
+    c. and so on...
+
+Using above models, we can predict snowfall for as long as we want in future going upto 22nd entury as well.
+But the drawbacks of going so far in future at current time are:
+
+1. Accuracy over prediction decreases, i.e., for a fixed margin of error, our confidence score for a particular prediciton of snowfall decreases when we go further away from current time
+2. As we predict far away in future, our training data will start containing instances of our own predictions, which will lead to errornous predictions and degrade model accuracy over time.
+
+Below are the snowfall predictions for the 2016-2017 (starting from February) and 2017-2018 season using each of the above methods.
+
+###Training Data
+
+1. For Statistical Models - Last 30 years data of same month
+2. For Regression Models - Last 30 years data of same month and current year data of recent months
+
+
+```{r, include=FALSE}
+predictionData<- data.table(c('Moving Average', 'ARMA', 'Linear Regression', 'Neural Net', 'ARMA', 'Moving Average', 'Neural Net', 'Linear Regression'),
+                            c('2016-2017', '2017-2018'),  0, 0, 0, 0, 0, 0, 0, 0, 0)
+names(predictionData)<- c('model', colnames(snowData)[1:10])
+predictionData<- predictionData[order(model, Winter)]
+yearToPredict<- c('2016-2017', '2017-2018')
+monthToPredict<- colnames(predictionData)[3:10]
+passedTime<- c(0, 6.00, 74.50, 55.25)
+
+##ARMA
+for(i in 1:length(yearToPredict)){
+  val<- c()
+  for (j in 1:length(monthToPredict)){
+    if(yearToPredict[i] == '2016-2017'){
+      if(j<5){
+        val<- c(val, passedTime[j])
+        predictionData[model=='Moving Average' & Winter == yearToPredict[i], eval(parse(text = monthToPredict[j])):=passedTime[j]]
+        next
+      }
+      model<- auto.arima(snowData[(nrow(snowData) - 29):nrow(snowData)][[monthToPredict[j]]])
+      currValue<- as.numeric(predict(model, 1)$pred)
+      val<- c(val, currValue)
+    }else{
+      model<- auto.arima(c(snowData[(nrow(snowData) - 28):nrow(snowData)][[monthToPredict[j]]],
+                      predictionData[1][[monthToPredict[j]]]))
+      currValue<- as.numeric(predict(model, 1)$pred)
+      val<- c(val, currValue)
+    }
+    predictionData[model=='ARMA' & Winter == yearToPredict[i], eval(parse(text = monthToPredict[j])):=currValue]
+  }
+  predictionData[model=='ARMA' & Winter == yearToPredict[i], `Total Inches`:= sum(val)]
+}
+
+##MA
+for(i in 1:length(yearToPredict)){
+  val<- c()
+  for (j in 1:length(monthToPredict)){
+    if(yearToPredict[i] == '2016-2017'){
+      if(j<5){
+        val<- c(val, passedTime[j])
+        predictionData[model=='ARMA' & Winter == yearToPredict[i], eval(parse(text = monthToPredict[j])):=passedTime[j]]
+        next
+      }
+      currValue<- mean(snowData[(nrow(snowData) - 29):nrow(snowData)][[monthToPredict[j]]], na.rm=F)
+      val<- c(val, currValue)
+    }else{
+      currValue<- mean(c(snowData[(nrow(snowData) - 28):nrow(snowData)][[monthToPredict[j]]],
+                         predictionData[5][[monthToPredict[j]]]), na.rm=F)
+      val<- c(val, currValue)
+    }
+    predictionData[model=='Moving Average' & Winter == yearToPredict[i], eval(parse(text = monthToPredict[j])):=currValue]
+  }
+  predictionData[model=='Moving Average' & Winter == yearToPredict[i], `Total Inches`:= sum(val)]
+}
+
+##Linear Regression
+FEATURE_SIZE<- 30
+for(i in 1:length(yearToPredict)){
+  val<- c()
+  for (j in 1:length(monthToPredict)){
+    if(yearToPredict[i] == '2016-2017'){
+      if(j<5){
+        val<- c(val, passedTime[j])
+        predictionData[model=='Linear Regression' & Winter == yearToPredict[i], eval(parse(text = monthToPredict[j])):=passedTime[j]]
+        next
+      }
+      regtrainx<- data.table()
+      recMonthDataTable<- data.table()
+      
+      for(k in FEATURE_SIZE:(nrow(snowData)-1)){
+        regtrainx<- rbindlist(list(regtrainx, data.table(t(data.table(snowData[[monthToPredict[j]]][(k - FEATURE_SIZE + 1):k])))))
+        l<- j
+        recMonthVal<- c()
+        while(l > 1){
+          recMonthVal<- c(recMonthVal, snowData[[monthToPredict[l-1]]][k+1])
+          l<- l - 1
+        }
+        recMonthDataTable<- rbindlist(list(recMonthDataTable, data.table(t(data.table(recMonthVal)))))
+      }
+      
+      names(recMonthDataTable)<- LETTERS[1:ncol(recMonthDataTable)]
+      if(nrow(recMonthDataTable) != 0)
+        regtrainx<- cbind(regtrainx, recMonthDataTable)
+      regtrainy<- snowData[((FEATURE_SIZE + 1)):nrow(snowData)]
+      regtrain<- regtrainx[, y := regtrainy[[monthToPredict[j]]]]
+      model<- lm(y~., data = regtrain)
+      
+      realtimeData<- snowData[[monthToPredict[j]]][(nrow(snowData) - 29):nrow(snowData)]
+      realtimeData<- c(realtimeData, rev(val))
+      
+      data<- data.table(t(data.table(realtimeData)))
+      if(!is.null(val))
+        names(data)<- c(names(data)[1:30], LETTERS[1:length(val)])
+      currValue<- predict.lm(model, data)
+      if(currValue < 0)
+        currValue<- 0
+      val<- c(val, currValue)
+    }else{
+      regtrainx<- data.table()
+      recMonthDataTable<- data.table()
+      for(k in FEATURE_SIZE:(nrow(snowData)-1)){
+        regtrainx<- rbindlist(list(regtrainx, data.table(t(data.table(snowData[[monthToPredict[j]]][(k - FEATURE_SIZE + 1):k])))))
+        l<- j
+        recMonthVal<- c()
+        while(l > 1){
+          recMonthVal<- c(recMonthVal, snowData[[monthToPredict[l-1]]][k+1])
+          l<- l - 1
+        }
+        recMonthDataTable<- rbindlist(list(recMonthDataTable, data.table(t(data.table(recMonthVal)))))
+      }
+      names(recMonthDataTable)<- LETTERS[1:ncol(recMonthDataTable)]
+      if(nrow(recMonthDataTable) != 0)
+        regtrainx<- cbind(regtrainx, recMonthDataTable)
+      regtrainy<- snowData[((FEATURE_SIZE + 1)):nrow(snowData)]
+      regtrain<- regtrainx[, y := regtrainy[[monthToPredict[j]]]]
+      model<- lm(y~., data = regtrain)
+      
+      realtimeData<- c(snowData[[monthToPredict[j]]][(nrow(snowData) - 28):nrow(snowData)], predictionData[3][[monthToPredict[j]]])
+      realtimeData<- c(realtimeData, rev(val))
+      
+      data<- data.table(t(data.table(realtimeData)))
+      if(!is.null(val))
+        names(data)<- c(names(data)[1:30], LETTERS[1:length(val)])
+      currValue<- predict.lm(model, data)
+      if(currValue < 0)
+        currValue<- 0
+      val<- c(val, currValue)
+    }
+    predictionData[model=='Linear Regression' & Winter == yearToPredict[i], eval(parse(text = monthToPredict[j])):=currValue]
+  }
+  predictionData[model=='Linear Regression' & Winter == yearToPredict[i], `Total Inches`:= sum(val)]
+}
+
+##Neural Net
+FEATURE_SIZE<- 30
+for(i in 1:length(yearToPredict)){
+  val<- c()
+  for (j in 1:length(monthToPredict)){
+    if(yearToPredict[i] == '2016-2017'){
+      if(j<5){
+        val<- c(val, passedTime[j])
+        predictionData[model=='Neural Net' & Winter == yearToPredict[i], eval(parse(text = monthToPredict[j])):=passedTime[j]]
+        next
+      }
+      regtrainx<- data.table()
+      recMonthDataTable<- data.table()
+      
+      for(k in FEATURE_SIZE:(nrow(snowData)-1)){
+        regtrainx<- rbindlist(list(regtrainx, data.table(t(data.table(snowData[[monthToPredict[j]]][(k - FEATURE_SIZE + 1):k])))))
+        l<- j
+        recMonthVal<- c()
+        while(l > 1){
+          recMonthVal<- c(recMonthVal, snowData[[monthToPredict[l-1]]][k+1])
+          l<- l - 1
+        }
+        recMonthDataTable<- rbindlist(list(recMonthDataTable, data.table(t(data.table(recMonthVal)))))
+      }
+      
+      names(recMonthDataTable)<- LETTERS[1:ncol(recMonthDataTable)]
+      if(nrow(recMonthDataTable) != 0)
+        regtrainx<- cbind(regtrainx, recMonthDataTable)
+      regtrainy<- snowData[((FEATURE_SIZE + 1)):nrow(snowData)]
+      regtrain<- regtrainx[, y := regtrainy[[monthToPredict[j]]]]
+      
+      names <- names(regtrain)[1:(ncol(regtrain)-1)]
+      a <- as.formula(paste('y ~ ' ,paste(names,collapse='+')))
+      model<- neuralnet(formula = a, data = regtrain, hidden = 4)
+      
+      realtimeData<- snowData[[monthToPredict[j]]][(nrow(snowData) - 29):nrow(snowData)]
+      realtimeData<- c(realtimeData, rev(val))
+      
+      data<- data.table(t(data.table(realtimeData)))
+      if(!is.null(val))
+        names(data)<- c(names(data)[1:30], LETTERS[1:length(val)])
+      currValue<- as.numeric(compute(model, data)$net.result)
+      if(currValue < 0)
+        currValue<- 0
+      val<- c(val, currValue)
+    }else{
+      regtrainx<- data.table()
+      recMonthDataTable<- data.table()
+      for(k in FEATURE_SIZE:(nrow(snowData)-1)){
+        regtrainx<- rbindlist(list(regtrainx, data.table(t(data.table(snowData[[monthToPredict[j]]][(k - FEATURE_SIZE + 1):k])))))
+        l<- j
+        recMonthVal<- c()
+        while(l > 1){
+          recMonthVal<- c(recMonthVal, snowData[[monthToPredict[l-1]]][k+1])
+          l<- l - 1
+        }
+        recMonthDataTable<- rbindlist(list(recMonthDataTable, data.table(t(data.table(recMonthVal)))))
+      }
+      names(recMonthDataTable)<- LETTERS[1:ncol(recMonthDataTable)]
+      if(nrow(recMonthDataTable) != 0)
+        regtrainx<- cbind(regtrainx, recMonthDataTable)
+      regtrainy<- snowData[((FEATURE_SIZE + 1)):nrow(snowData)]
+      regtrain<- regtrainx[, y := regtrainy[[monthToPredict[j]]]]
+      
+      names <- names(regtrain)[1:(ncol(regtrain)-1)]
+      a <- as.formula(paste('y ~ ' ,paste(names,collapse='+')))
+      model<- neuralnet(a, data = regtrain, hidden = 4)
+      
+      realtimeData<- c(snowData[[monthToPredict[j]]][(nrow(snowData) - 28):nrow(snowData)], predictionData[7][[monthToPredict[j]]])
+      realtimeData<- c(realtimeData, rev(val))
+      
+      data<- data.table(t(data.table(realtimeData)))
+      if(!is.null(val))
+        names(data)<- c(names(data)[1:30], LETTERS[1:length(val)])
+      currValue<- compute(model, data)$net.result
+      if(currValue < 0)
+        currValue<- 0
+      val<- c(val, currValue)
+    }
+    predictionData[model=='Neural Net' & Winter == yearToPredict[i], eval(parse(text = monthToPredict[j])):=currValue]
+  }
+  predictionData[model=='Neural Net' & Winter == yearToPredict[i], `Total Inches`:= sum(val)]
+}
+
+predictionDataForPlot<- melt(predictionData[,1:10, with=F], id=c('model', 'Winter'))
+predictionDataForPlot<- predictionDataForPlot[order(model, Winter)]
+predictionDataForPlot[, temp:= paste(Winter, variable, sep=' | ')]
+predictionDataForPlot[, temp:= factor(temp, levels = unique(predictionDataForPlot$temp))]
+```
+
+```{r}
+ggplot(data=predictionDataForPlot) + ggtitle('Snowfall prediction for season 2016-2017 and 2017-2018') +
+  geom_line(aes(x = temp, y=value, group=model, color = model)) +
+  xlab('Season | month') + ylab('Predicted Snowfall in Inches') + theme(axis.text.x = element_text(angle=45))+
+  scale_y_continuous(breaks=seq(0, 100, 5))
+```
